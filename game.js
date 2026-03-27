@@ -21,7 +21,7 @@ const player = {
     rotationSpeed: 3.0,  // radians per second
     acceleration: 200,   // pixels per second squared
     maxSpeed: 400,
-    friction: 0.5,       // Space friction (optional, EV has some)
+    friction: 0.1,       // Very low space friction for heavy drifting (like EV)
     radius: 30,          // For collision
     hull: 100,
     shields: 100,
@@ -229,10 +229,9 @@ function update(dt) {
     }
 
     // Apply friction (space drag for playability)
-    // Inertialess flight: much stronger friction when not thrusting
-    const currentFriction = keys.ArrowUp ? player.friction : player.friction * 5;
-    player.vx -= player.vx * currentFriction * dt;
-    player.vy -= player.vy * currentFriction * dt;
+    // Removed inertialess flight per user request to allow drift
+    player.vx -= player.vx * player.friction * dt;
+    player.vy -= player.vy * player.friction * dt;
 
     // Limit speed
     const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
@@ -296,23 +295,41 @@ function update(dt) {
     // Firing Weapons
     if (keys.Space && player.phaserCooldown <= 0 && player.energy >= 5) {
         player.energy -= 5;
-        player.phaserCooldown = 0.2;
+        // Increase cooldown slightly since beam deals instant damage and stays on screen
+        player.phaserCooldown = 0.3;
 
         // 360-Degree Phaser Targeting
         let fireAngle = player.angle;
+        let targetX = player.x + Math.cos(fireAngle) * 800;
+        let targetY = player.y + Math.sin(fireAngle) * 800;
+
         if (nearestEnemy && shortestDist < 800) {
             fireAngle = Math.atan2(nearestEnemy.y - player.y, nearestEnemy.x - player.x);
+            targetX = nearestEnemy.x;
+            targetY = nearestEnemy.y;
+
+            // Apply instant damage
+            if (nearestEnemy.shields > 0) {
+                nearestEnemy.shields -= player.phaserDamage;
+                if (nearestEnemy.shields < 0) {
+                    nearestEnemy.hull += nearestEnemy.shields;
+                    nearestEnemy.shields = 0;
+                }
+            } else {
+                nearestEnemy.hull -= player.phaserDamage;
+            }
+            createParticles(targetX, targetY, '#ff8800', 5);
         }
 
         projectiles.push({
-            x: player.x + Math.cos(fireAngle) * 30,
-            y: player.y + Math.sin(fireAngle) * 30,
-            vx: player.vx + Math.cos(fireAngle) * 800,
-            vy: player.vy + Math.sin(fireAngle) * 800,
-            type: 'phaser',
-            color: '#ff8800',
-            life: 1.0,
-            damage: 10,
+            x: player.x,
+            y: player.y,
+            targetX: targetX,
+            targetY: targetY,
+            type: 'beam', // Changed to beam for drawing logic
+            color: '#ffaa00',
+            life: 0.3, // Short duration for visual tapering
+            maxLife: 0.3,
             owner: 'player'
         });
     }
@@ -583,6 +600,11 @@ function closeMap() {
     document.getElementById('mapOverlay').classList.add('hidden');
 }
 window.closeMap = closeMap;
+
+function closeMissionModal() {
+    document.getElementById('missionCompleteModal').classList.add('hidden');
+}
+window.closeMissionModal = closeMissionModal;
 
 function drawMap() {
     const mapCanvas = document.getElementById('mapCanvas');
@@ -987,6 +1009,10 @@ function checkMissions() {
             document.getElementById('messageLog').innerText = `Mission Complete: ${m.title}! Earned ${m.reward} cr.`;
             player.activeMissions.splice(i, 1);
 
+            // Show Modal
+            document.getElementById('missionCompleteText').innerText = `You have successfully delivered the ${m.title} to ${m.target}.\n\nReward: ${m.reward} cr.`;
+            document.getElementById('missionCompleteModal').classList.remove('hidden');
+
             // Rank Promotion Logic
             let oldRank = player.rank;
             if (player.missionsCompleted >= 20) player.rank = 'Admiral';
@@ -1081,8 +1107,23 @@ function draw(ctx) {
             ctx.shadowColor = p.color;
             ctx.fill();
             ctx.shadowBlur = 0;
+        } else if (p.type === 'beam') {
+            // Sustained beam (tapers off as life decreases)
+            ctx.strokeStyle = p.color;
+            // Max width starts around 4px (like pulse), tapers to 0
+            ctx.lineWidth = 4 * (p.life / p.maxLife);
+            ctx.moveTo(player.x, player.y); // lock to player position to track movement
+            ctx.lineTo(p.targetX, p.targetY);
+            ctx.stroke();
+
+            // Add a bright core to the beam
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2 * (p.life / p.maxLife);
+            ctx.moveTo(player.x, player.y);
+            ctx.lineTo(p.targetX, p.targetY);
+            ctx.stroke();
         } else {
-            // Phasers / Disruptors (lines)
+            // Disruptors (lines)
             ctx.strokeStyle = p.color;
             ctx.lineWidth = 2;
             ctx.moveTo(p.x, p.y);
@@ -1289,82 +1330,195 @@ function drawPlayer(ctx) {
     ctx.translate(player.x, player.y);
     ctx.rotate(player.angle);
 
-    // Enterprise-D Style (Saucer + Engineering Hull + Nacelles)
     ctx.fillStyle = '#C8D0D8'; // Hull grey
     ctx.strokeStyle = '#8090A0';
     ctx.lineWidth = 2;
 
-    // Engineering Hull
-    ctx.beginPath();
-    ctx.ellipse(-10, 0, 15, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+    if (player.shipType === 'Runabout') {
+        // Boxy shuttlecraft
+        ctx.fillRect(-10, -10, 25, 20);
+        ctx.strokeRect(-10, -10, 25, 20);
+        // Cockpit
+        ctx.fillStyle = '#113355';
+        ctx.fillRect(5, -6, 10, 12);
+        // Nacelles attached to sides
+        ctx.fillStyle = '#90A0B0';
+        ctx.fillRect(-12, 12, 25, 5);
+        ctx.fillRect(-12, -17, 25, 5);
 
-    // Saucer Section (Front)
-    ctx.beginPath();
-    ctx.ellipse(15, 0, 20, 25, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+        if (keys.ArrowUp) {
+            ctx.fillStyle = '#FF9933';
+            ctx.beginPath();
+            ctx.arc(-12, 0, 6, Math.PI/2, Math.PI*1.5);
+            ctx.fill();
+        }
 
-    // Bridge (small dome)
-    ctx.fillStyle = '#E0E8F0';
-    ctx.beginPath();
-    ctx.arc(15, 0, 5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Deflector Dish
-    ctx.fillStyle = '#33CCFF';
-    ctx.beginPath();
-    ctx.ellipse(-5, 0, 3, 5, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Port Nacelle Pylon
-    ctx.strokeStyle = '#607080';
-    ctx.beginPath();
-    ctx.moveTo(-15, 5);
-    ctx.lineTo(-20, 15);
-    ctx.stroke();
-
-    // Starboard Nacelle Pylon
-    ctx.beginPath();
-    ctx.moveTo(-15, -5);
-    ctx.lineTo(-20, -15);
-    ctx.stroke();
-
-    // Nacelles
-    ctx.fillStyle = '#90A0B0';
-    // Port
-    ctx.beginPath();
-    ctx.roundRect(-30, 12, 25, 6, 3);
-    ctx.fill();
-    ctx.stroke();
-    // Starboard
-    ctx.beginPath();
-    ctx.roundRect(-30, -18, 25, 6, 3);
-    ctx.fill();
-    ctx.stroke();
-
-    // Bussard Collectors (Red front of nacelles)
-    ctx.fillStyle = '#FF3333';
-    ctx.beginPath();
-    ctx.arc(-7, 15, 3, -Math.PI/2, Math.PI/2);
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(-7, -15, 3, -Math.PI/2, Math.PI/2);
-    ctx.fill();
-
-    // Warp Plasma Grilles (Blue side of nacelles)
-    ctx.fillStyle = '#3399FF';
-    ctx.fillRect(-25, 13, 15, 2);
-    ctx.fillRect(-25, -17, 15, 2);
-
-    // Impulse Engines (Red back of saucer)
-    if (keys.ArrowUp) {
-        ctx.fillStyle = '#FF9933'; // Active impulse
-        // Thrust trail
-        ctx.globalAlpha = 0.5;
+    } else if (player.shipType === 'Defiant Class') {
+        // Compact, tough escort. Blended saucer and nacelles.
         ctx.beginPath();
-        ctx.moveTo(-10, 0);
+        ctx.moveTo(25, 0);   // Nose
+        ctx.lineTo(5, 15);   // Front wing
+        ctx.lineTo(-20, 18); // Back nacelle
+        ctx.lineTo(-20, -18);
+        ctx.lineTo(5, -15);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Deflector / Warhead front
+        ctx.fillStyle = '#ff9900';
+        ctx.beginPath();
+        ctx.arc(20, 0, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Cockpit / Bridge
+        ctx.fillStyle = '#E0E8F0';
+        ctx.beginPath();
+        ctx.arc(0, 0, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (keys.ArrowUp) {
+            ctx.fillStyle = '#FF9933';
+            ctx.fillRect(-22, -15, 4, 30);
+        }
+
+    } else if (player.shipType === 'Intrepid Class') {
+        // Arrowhead saucer, sleek hull
+        ctx.beginPath();
+        ctx.moveTo(30, 0);
+        ctx.lineTo(0, 15);
+        ctx.lineTo(-10, 8);
+        ctx.lineTo(-10, -8);
+        ctx.lineTo(0, -15);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Engineering
+        ctx.beginPath();
+        ctx.ellipse(-15, 0, 12, 6, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Variable Geometry Nacelles (swept up/back)
+        ctx.fillStyle = '#90A0B0';
+        ctx.beginPath();
+        ctx.roundRect(-25, 12, 20, 4, 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.roundRect(-25, -16, 20, 4, 2);
+        ctx.fill();
+        ctx.stroke();
+
+        if (keys.ArrowUp) {
+            ctx.fillStyle = '#FF9933';
+            ctx.fillRect(-20, -2, 4, 4);
+        }
+
+    } else if (player.shipType === 'Sovereign Class') {
+        // Elongated, aggressive explorer
+        // Saucer
+        ctx.beginPath();
+        ctx.ellipse(15, 0, 25, 15, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Long Engineering Hull
+        ctx.beginPath();
+        ctx.ellipse(-10, 0, 20, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Swept pylons
+        ctx.beginPath();
+        ctx.moveTo(-5, 5); ctx.lineTo(-25, 15); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-5, -5); ctx.lineTo(-25, -15); ctx.stroke();
+
+        // Long Nacelles
+        ctx.fillStyle = '#90A0B0';
+        ctx.beginPath(); ctx.roundRect(-35, 13, 30, 5, 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.roundRect(-35, -18, 30, 5, 2); ctx.fill(); ctx.stroke();
+
+        if (keys.ArrowUp) {
+            ctx.fillStyle = '#FF9933';
+            ctx.fillRect(-30, -3, 6, 6);
+        }
+
+    } else {
+        // Default (Galaxy Class)
+        // Engineering Hull
+        ctx.beginPath();
+        ctx.ellipse(-10, 0, 15, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Saucer Section (Front)
+        ctx.beginPath();
+        ctx.ellipse(15, 0, 20, 25, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Bridge (small dome)
+        ctx.fillStyle = '#E0E8F0';
+        ctx.beginPath();
+        ctx.arc(15, 0, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Deflector Dish
+        ctx.fillStyle = '#33CCFF';
+        ctx.beginPath();
+        ctx.ellipse(-5, 0, 3, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Port Nacelle Pylon
+        ctx.strokeStyle = '#607080';
+        ctx.beginPath();
+        ctx.moveTo(-15, 5);
+        ctx.lineTo(-20, 15);
+        ctx.stroke();
+
+        // Starboard Nacelle Pylon
+        ctx.beginPath();
+        ctx.moveTo(-15, -5);
+        ctx.lineTo(-20, -15);
+        ctx.stroke();
+
+        // Nacelles
+        ctx.fillStyle = '#90A0B0';
+        // Port
+        ctx.beginPath();
+        ctx.roundRect(-30, 12, 25, 6, 3);
+        ctx.fill();
+        ctx.stroke();
+        // Starboard
+        ctx.beginPath();
+        ctx.roundRect(-30, -18, 25, 6, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        // Bussard Collectors (Red front of nacelles)
+        ctx.fillStyle = '#FF3333';
+        ctx.beginPath();
+        ctx.arc(-7, 15, 3, -Math.PI/2, Math.PI/2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(-7, -15, 3, -Math.PI/2, Math.PI/2);
+        ctx.fill();
+
+        // Warp Plasma Grilles (Blue side of nacelles)
+        ctx.fillStyle = '#3399FF';
+        ctx.fillRect(-25, 13, 15, 2);
+        ctx.fillRect(-25, -17, 15, 2);
+
+        // Impulse Engines (Red back of saucer)
+        if (keys.ArrowUp) {
+            ctx.fillStyle = '#FF9933'; // Active impulse
+            // Thrust trail
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(-10, 0);
         ctx.lineTo(-40, -10);
         ctx.lineTo(-40, 10);
         ctx.fill();
