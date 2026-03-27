@@ -12,7 +12,7 @@ resizeCanvas();
 let lastTime = 0;
 
 // Player State
-const player = {
+let player = {
     x: window.innerWidth / 2,
     y: window.innerHeight / 2,
     vx: 0,
@@ -70,7 +70,7 @@ const UPGRADES = [
     { name: 'Quantum Torpedoes', type: 'torpedo', value: 20, price: 6000, desc: 'Adds +20 damage to torpedoes.' }
 ];
 
-const SYSTEMS = {
+let SYSTEMS = {
     'Sol': { x: 100, y: 100, color: '#ffff99', bodies: [
         { x: 0, y: 0, radius: 80, type: 'starbase', color: '#708090', name: 'Earth Spacedock', economy: { 'Food': 1.0, 'Medical Supplies': 1.0, 'Dilithium': 1.0, 'Romulan Ale': 3.0 } }
     ]},
@@ -111,6 +111,77 @@ let currentState = GameState.PLAYING;
 const projectiles = [];
 const enemies = [];
 const particles = [];
+
+// Save System Functions
+function resetGame() {
+    if (confirm("Are you sure you want to completely wipe your save data and start over?")) {
+        localStorage.removeItem('evTrekSaveData');
+        location.reload();
+    }
+}
+window.resetGame = resetGame;
+
+function saveGame() {
+    try {
+        // Need to remove cyclical reference from dockedAt before saving
+        let savedPlayer = { ...player };
+        if (savedPlayer.dockedAt) savedPlayer.dockedAt = savedPlayer.dockedAt.name; // save name reference only
+
+        const saveData = {
+            player: savedPlayer,
+            SYSTEMS: SYSTEMS
+        };
+        localStorage.setItem('evTrekSaveData', JSON.stringify(saveData));
+        console.log("Game auto-saved.");
+    } catch (e) {
+        console.error("Failed to save game state: ", e);
+    }
+}
+
+function loadGame() {
+    try {
+        const savedData = localStorage.getItem('evTrekSaveData');
+        if (savedData) {
+            const parsed = JSON.parse(savedData);
+            if (parsed.player) {
+                player = parsed.player;
+            }
+            if (parsed.SYSTEMS) SYSTEMS = parsed.SYSTEMS;
+
+            // Re-establish cyclical reference for docked planet
+            if (player.dockedAt && typeof player.dockedAt === 'string') {
+                for (let body of SYSTEMS[player.currentSystem].bodies) {
+                    if (body.name === player.dockedAt) {
+                        player.dockedAt = body;
+                        currentState = GameState.DOCKED;
+
+                        // Wait for DOM to load if this runs in head, then show UI
+                        window.addEventListener('DOMContentLoaded', () => {
+                            document.getElementById('dockingMenu').classList.remove('hidden');
+                            document.getElementById('dockedLocationName').innerText = body.name;
+                            switchTab('spaceport');
+                            let desc = body.type === 'starbase' ?
+                                "Welcome to the station promenade. You can refuel and repair here." :
+                                "Welcome to the planetary spaceport. How can we help you?";
+                            document.getElementById('spaceportDescription').innerText = desc;
+                            populateCommodities();
+                            populateMissions();
+                            populateShipyard();
+                            populateOutfitter();
+                        });
+                        break;
+                    }
+                }
+            }
+            console.log("Game loaded.");
+        }
+    } catch (e) {
+        console.error("Failed to load game state: ", e);
+    }
+}
+
+// Load game on start
+loadGame();
 
 // Environment Entities (Loaded dynamically based on system)
 let celestialBodies = SYSTEMS[player.currentSystem].bodies;
@@ -579,6 +650,8 @@ function attemptWarp() {
                 enemies.length = 0;
                 projectiles.length = 0;
                 for (let i = 0; i < 5; i++) spawnEnemy();
+
+                saveGame(); // Auto-save after warping
             } else {
                 document.getElementById('messageLog').innerText = `Not enough auxiliary power to warp. Need 20%.`;
             }
@@ -688,6 +761,7 @@ document.getElementById('mapCanvas').addEventListener('click', (e) => {
 
 
 // Docking Logic
+window.attemptDocking = attemptDocking;
 function attemptDocking() {
     for (let body of celestialBodies) {
         let dist = Math.sqrt(Math.pow(player.x - body.x, 2) + Math.pow(player.y - body.y, 2));
@@ -713,6 +787,7 @@ function attemptDocking() {
             populateShipyard();
             populateOutfitter();
             checkMissions();
+            saveGame(); // Auto-save on dock
             break;
         }
     }
@@ -819,6 +894,7 @@ function buyCommodity(name, price) {
         player.cargo[name]++;
         populateCommodities(); // refresh UI
         updateUI();
+        saveGame();
     } else if (getUsedCargo() >= player.cargoSpace) {
         document.getElementById('messageLog').innerText = "Not enough cargo space.";
     } else {
@@ -832,6 +908,7 @@ function sellCommodity(name, price) {
         player.cargo[name]--;
         populateCommodities(); // refresh UI
         updateUI();
+        saveGame();
     }
 }
 
@@ -907,6 +984,7 @@ function buyShip(shipName) {
         document.getElementById('messageLog').innerText = `Purchased ${ship.name}. Transferred command.`;
         populateShipyard();
         updateUI();
+        saveGame();
     } else {
         document.getElementById('messageLog').innerText = `Not enough credits. (Need ${cost} cr after trade-in)`;
     }
@@ -946,6 +1024,7 @@ function buyUpgrade(upgradeName) {
 
         document.getElementById('messageLog').innerText = `Installed ${upg.name}.`;
         updateUI();
+        saveGame();
     } else {
         document.getElementById('messageLog').innerText = "Not enough credits.";
     }
@@ -1027,6 +1106,7 @@ function checkMissions() {
             }
 
             updateUI();
+            saveGame();
         }
     }
 }
