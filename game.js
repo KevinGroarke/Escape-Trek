@@ -26,6 +26,8 @@ const player = {
     hull: 100,
     shields: 100,
     energy: 100,
+    torpedoAmmo: 50,
+    maxTorpedoAmmo: 50,
     phaserCooldown: 0,
     torpedoCooldown: 0,
     score: 0,
@@ -46,13 +48,18 @@ const player = {
     maxHull: 100,
     maxShields: 100,
     maxEnergy: 100,
-    activeMissions: []
+    activeMissions: [],
+    missionsCompleted: 0,
+    rank: 'Ensign'
 };
 
+const RANKS = ['Ensign', 'Lieutenant', 'Commander', 'Captain', 'Admiral'];
+
 const SHIPS = [
-    { name: 'Runabout', price: 5000, cargo: 20, hull: 50, shields: 50, energy: 50, speed: 500, accel: 300, turn: 4.0, radius: 15 },
-    { name: 'Defiant Class', price: 25000, cargo: 30, hull: 150, shields: 200, energy: 150, speed: 600, accel: 400, turn: 5.0, radius: 20 },
-    { name: 'Galaxy Class', price: 50000, cargo: 50, hull: 100, shields: 100, energy: 100, speed: 400, accel: 200, turn: 3.0, radius: 30 }
+    { name: 'Runabout', price: 5000, cargo: 20, hull: 50, shields: 50, energy: 50, speed: 500, accel: 300, turn: 4.0, radius: 15, reqRank: 'Ensign' },
+    { name: 'Defiant Class', price: 25000, cargo: 30, hull: 150, shields: 200, energy: 150, speed: 600, accel: 400, turn: 5.0, radius: 20, reqRank: 'Lieutenant' },
+    { name: 'Galaxy Class', price: 50000, cargo: 50, hull: 100, shields: 100, energy: 100, speed: 400, accel: 200, turn: 3.0, radius: 30, reqRank: 'Captain' },
+    { name: 'Sovereign Class', price: 100000, cargo: 80, hull: 250, shields: 300, energy: 200, speed: 300, accel: 150, turn: 2.0, radius: 45, reqRank: 'Admiral' }
 ];
 
 const UPGRADES = [
@@ -73,7 +80,7 @@ const SYSTEMS = {
     'Epsilon Eridani': { x: -200, y: 150, color: '#99ccff', bodies: [
         { x: 0, y: 0, radius: 150, type: 'terrestrial', color: '#4169E1', name: 'Risa', economy: { 'Food': 0.8, 'Medical Supplies': 1.2, 'Dilithium': 1.5, 'Romulan Ale': 0.5 } }
     ]},
-    'Bajor': { x: 150, y: 400, color: '#ffcc99', bodies: [
+    'Bajor': { x: 150, y: 150, color: '#ffcc99', bodies: [
         { x: 0, y: 0, radius: 80, type: 'starbase', color: '#708090', name: 'Deep Space Station 9', economy: { 'Food': 1.0, 'Medical Supplies': 0.9, 'Dilithium': 1.0, 'Romulan Ale': 2.0 } }
     ]}
 };
@@ -124,7 +131,9 @@ function spawnEnemy() {
         hull: 50,
         shields: 50,
         type: Math.random() > 0.5 ? 'romulan' : 'klingon',
-        cooldown: 0
+        cooldown: 0,
+        isCloaked: false,
+        cloakTimer: Math.random() * 5 + 5 // Cloak every 5-10 seconds
     });
 }
 
@@ -192,7 +201,17 @@ function gameLoop(timestamp) {
 }
 
 function update(dt) {
-    if (currentState === GameState.GAME_OVER) return; // Don't process anything if game over
+    if (currentState === GameState.GAME_OVER) {
+        // Only update particles if game over so explosions play out
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.life -= dt;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+        return;
+    }
     if (currentState !== GameState.PLAYING) return;   // Don't process input/movement if in menus
 
     // Handle turning
@@ -210,8 +229,10 @@ function update(dt) {
     }
 
     // Apply friction (space drag for playability)
-    player.vx -= player.vx * player.friction * dt;
-    player.vy -= player.vy * player.friction * dt;
+    // Inertialess flight: much stronger friction when not thrusting
+    const currentFriction = keys.ArrowUp ? player.friction : player.friction * 5;
+    player.vx -= player.vx * currentFriction * dt;
+    player.vy -= player.vy * currentFriction * dt;
 
     // Limit speed
     const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
@@ -260,15 +281,34 @@ function update(dt) {
     if (player.energy < player.maxEnergy) player.energy = Math.min(player.maxEnergy, player.energy + 10 * dt);
     if (player.shields < player.maxShields && player.energy > 50) player.shields = Math.min(player.maxShields, player.shields + 2 * dt);
 
+    // Targeting logic for weapons
+    let nearestEnemy = null;
+    let shortestDist = Infinity;
+    for (let e of enemies) {
+        if (e.isCloaked) continue; // Cannot target cloaked enemies
+        let dist = Math.sqrt(Math.pow(e.x - player.x, 2) + Math.pow(e.y - player.y, 2));
+        if (dist < shortestDist) {
+            shortestDist = dist;
+            nearestEnemy = e;
+        }
+    }
+
     // Firing Weapons
     if (keys.Space && player.phaserCooldown <= 0 && player.energy >= 5) {
         player.energy -= 5;
         player.phaserCooldown = 0.2;
+
+        // 360-Degree Phaser Targeting
+        let fireAngle = player.angle;
+        if (nearestEnemy && shortestDist < 800) {
+            fireAngle = Math.atan2(nearestEnemy.y - player.y, nearestEnemy.x - player.x);
+        }
+
         projectiles.push({
-            x: player.x + Math.cos(player.angle) * 30,
-            y: player.y + Math.sin(player.angle) * 30,
-            vx: player.vx + Math.cos(player.angle) * 800,
-            vy: player.vy + Math.sin(player.angle) * 800,
+            x: player.x + Math.cos(fireAngle) * 30,
+            y: player.y + Math.sin(fireAngle) * 30,
+            vx: player.vx + Math.cos(fireAngle) * 800,
+            vy: player.vy + Math.sin(fireAngle) * 800,
             type: 'phaser',
             color: '#ff8800',
             life: 1.0,
@@ -277,25 +317,60 @@ function update(dt) {
         });
     }
 
-    if ((keys.ShiftLeft || keys.ShiftRight) && player.torpedoCooldown <= 0 && player.energy >= 20) {
+    // Temporarily disable torpedoes logic if ammo is 0, handled in the next step
+    if (keys.ShiftLeft && player.torpedoCooldown <= 0 && player.energy >= 20 && player.torpedoAmmo > 0) {
         player.energy -= 20;
+        player.torpedoAmmo -= 1;
         player.torpedoCooldown = 1.0;
+
+        let fireAngle = player.angle;
+        if (nearestEnemy && shortestDist < 1200) {
+            fireAngle = Math.atan2(nearestEnemy.y - player.y, nearestEnemy.x - player.x);
+        }
+
         projectiles.push({
-            x: player.x + Math.cos(player.angle) * 30,
-            y: player.y + Math.sin(player.angle) * 30,
-            vx: player.vx + Math.cos(player.angle) * 500,
-            vy: player.vy + Math.sin(player.angle) * 500,
+            x: player.x + Math.cos(fireAngle) * 30,
+            y: player.y + Math.sin(fireAngle) * 30,
+            vx: player.vx + Math.cos(fireAngle) * 400,
+            vy: player.vy + Math.sin(fireAngle) * 400,
             type: 'torpedo',
             color: '#ff0000',
             life: 2.0,
             damage: 40,
-            owner: 'player'
+            owner: 'player',
+            target: nearestEnemy // Used for homing later
         });
+    } else if (keys.ShiftLeft && player.torpedoCooldown <= 0 && player.torpedoAmmo <= 0) {
+        document.getElementById('messageLog').innerText = "Out of torpedoes!";
     }
 
     // Update Projectiles
     for (let i = projectiles.length - 1; i >= 0; i--) {
         let p = projectiles[i];
+
+        // Homing logic for torpedoes
+        if (p.type === 'torpedo' && p.target && p.target.hull > 0 && !p.target.isCloaked) {
+            let targetAngle = Math.atan2(p.target.y - p.y, p.target.x - p.x);
+            let speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+
+            // Adjust angle smoothly towards target
+            let currentAngle = Math.atan2(p.vy, p.vx);
+            let angleDiff = targetAngle - currentAngle;
+
+            // Normalize angle diff to -PI to PI
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+
+            // Turn rate limit (e.g., 2 radians per second)
+            let turnRate = 2.0;
+            if (angleDiff > turnRate * dt) angleDiff = turnRate * dt;
+            if (angleDiff < -turnRate * dt) angleDiff = -turnRate * dt;
+
+            let newAngle = currentAngle + angleDiff;
+            p.vx = Math.cos(newAngle) * speed;
+            p.vy = Math.sin(newAngle) * speed;
+        }
+
         p.x += p.vx * dt;
         p.y += p.vy * dt;
         p.life -= dt;
@@ -373,6 +448,16 @@ function update(dt) {
         let dist = Math.sqrt(dx*dx + dy*dy);
         let targetAngle = Math.atan2(dy, dx);
 
+        // Cloaking Logic
+        e.cloakTimer -= dt;
+        if (e.cloakTimer <= 0) {
+            e.isCloaked = !e.isCloaked;
+            e.cloakTimer = e.isCloaked ? (Math.random() * 3 + 2) : (Math.random() * 6 + 4);
+            if (dist < 800) {
+                document.getElementById('messageLog').innerText = e.isCloaked ? "Warning: Hostile vessel cloaking!" : "Hostile vessel decloaking!";
+            }
+        }
+
         // Turn towards player
         let angleDiff = targetAngle - e.angle;
         // Normalize angleDiff
@@ -381,14 +466,27 @@ function update(dt) {
 
         e.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), 2.0 * dt);
 
-        // Move towards player if far, stop if close
-        if (dist > 300) {
-            e.vx += Math.cos(e.angle) * 150 * dt;
-            e.vy += Math.sin(e.angle) * 150 * dt;
-        } else if (dist < 150) {
-            // Evade
-             e.vx -= Math.cos(e.angle) * 100 * dt;
-             e.vy -= Math.sin(e.angle) * 100 * dt;
+        // Movement logic
+        if (e.isCloaked) {
+            // While cloaked, try to flank or get into optimal firing position
+            if (dist < 400) {
+                // Circle strafe
+                e.vx += Math.cos(e.angle + Math.PI/2) * 200 * dt;
+                e.vy += Math.sin(e.angle + Math.PI/2) * 200 * dt;
+            } else {
+                e.vx += Math.cos(e.angle) * 250 * dt;
+                e.vy += Math.sin(e.angle) * 250 * dt;
+            }
+        } else {
+            // Uncloaked combat movement
+            if (dist > 300) {
+                e.vx += Math.cos(e.angle) * 150 * dt;
+                e.vy += Math.sin(e.angle) * 150 * dt;
+            } else if (dist < 150) {
+                // Evade
+                 e.vx -= Math.cos(e.angle) * 100 * dt;
+                 e.vy -= Math.sin(e.angle) * 100 * dt;
+            }
         }
 
         e.vx -= e.vx * 0.5 * dt;
@@ -399,7 +497,7 @@ function update(dt) {
 
         // Firing
         if (e.cooldown > 0) e.cooldown -= dt;
-        if (dist < 500 && Math.abs(angleDiff) < 0.2 && e.cooldown <= 0) {
+        if (!e.isCloaked && dist < 500 && Math.abs(angleDiff) < 0.2 && e.cooldown <= 0) {
             e.cooldown = 1.0;
             projectiles.push({
                 x: e.x + Math.cos(e.angle) * 20,
@@ -634,8 +732,22 @@ function repair() {
     }
 }
 
+function reloadTorpedoes() {
+    if (player.torpedoAmmo < player.maxTorpedoAmmo && player.credits >= 200) {
+        player.credits -= 200;
+        player.torpedoAmmo = player.maxTorpedoAmmo;
+        document.getElementById('messageLog').innerText = `Torpedo tubes reloaded.`;
+        updateUI();
+    } else if (player.torpedoAmmo >= player.maxTorpedoAmmo) {
+        document.getElementById('messageLog').innerText = `Torpedo tubes already full.`;
+    } else {
+        document.getElementById('messageLog').innerText = `Not enough credits.`;
+    }
+}
+
 window.refuel = refuel;
 window.repair = repair;
+window.reloadTorpedoes = reloadTorpedoes;
 
 function getUsedCargo() {
     let used = 0;
@@ -706,19 +818,26 @@ window.sellCommodity = sellCommodity;
 
 // Shipyard Logic
 function populateShipyard() {
-    let html = `<h3>Current Ship: ${player.shipType}</h3>`;
+    let html = `<h3>Current Ship: ${player.shipType} (Rank: ${player.rank})</h3>`;
     html += `<table style="width:100%; text-align:left;">
-                <tr><th>Ship Class</th><th>Price</th><th>Action</th></tr>`;
+                <tr><th>Ship Class</th><th>Price</th><th>Req. Rank</th><th>Action</th></tr>`;
 
     for (let ship of SHIPS) {
         html += `<tr>
                     <td>${ship.name} (Cargo: ${ship.cargo}, Spd: ${ship.speed})</td>
                     <td>${ship.price} cr</td>
+                    <td>${ship.reqRank}</td>
                     <td>`;
-        if (player.shipType !== ship.name) {
-            html += `<button class="action-btn" style="padding: 5px 10px; margin: 0;" onclick="buyShip('${ship.name}')">Buy</button>`;
-        } else {
+
+        let rankIndex = RANKS.indexOf(player.rank);
+        let reqRankIndex = RANKS.indexOf(ship.reqRank);
+
+        if (player.shipType === ship.name) {
              html += `<i>Owned</i>`;
+        } else if (rankIndex < reqRankIndex) {
+            html += `<i>Restricted</i>`;
+        } else {
+            html += `<button class="action-btn" style="padding: 5px 10px; margin: 0;" onclick="buyShip('${ship.name}')">Buy</button>`;
         }
         html += `</td></tr>`;
     }
@@ -729,6 +848,13 @@ function populateShipyard() {
 function buyShip(shipName) {
     let ship = SHIPS.find(s => s.name === shipName);
     if (!ship) return;
+
+    let rankIndex = RANKS.indexOf(player.rank);
+    let reqRankIndex = RANKS.indexOf(ship.reqRank);
+    if (rankIndex < reqRankIndex) {
+        document.getElementById('messageLog').innerText = `Insufficient rank. ${ship.reqRank} required.`;
+        return;
+    }
 
     // Calculate trade in value (half price of current ship base price)
     let currentShipBase = SHIPS.find(s => s.name === player.shipType);
@@ -857,8 +983,23 @@ function checkMissions() {
         let m = player.activeMissions[i];
         if (m.type === 'delivery' && m.target === player.dockedAt.name) {
             player.credits += m.reward;
+            player.missionsCompleted++;
             document.getElementById('messageLog').innerText = `Mission Complete: ${m.title}! Earned ${m.reward} cr.`;
             player.activeMissions.splice(i, 1);
+
+            // Rank Promotion Logic
+            let oldRank = player.rank;
+            if (player.missionsCompleted >= 20) player.rank = 'Admiral';
+            else if (player.missionsCompleted >= 10) player.rank = 'Captain';
+            else if (player.missionsCompleted >= 5) player.rank = 'Commander';
+            else if (player.missionsCompleted >= 2) player.rank = 'Lieutenant';
+
+            if (player.rank !== oldRank) {
+                setTimeout(() => {
+                    document.getElementById('messageLog').innerText = `Congratulations! You have been promoted to ${player.rank}.`;
+                }, 2000);
+            }
+
             updateUI();
         }
     }
@@ -872,6 +1013,9 @@ function updateUI() {
     document.getElementById('shieldBar').style.width = `${Math.min(100, Math.max(0, (player.shields / player.maxShields) * 100))}%`;
     document.getElementById('energyBar').innerText = `Aux. Power: ${Math.floor(player.energy)} / ${player.maxEnergy}`;
     document.getElementById('energyBar').style.width = `${Math.min(100, (player.energy / player.maxEnergy) * 100)}%`;
+    if (document.getElementById('torpedoBar')) {
+        document.getElementById('torpedoBar').innerText = `Torpedoes: ${player.torpedoAmmo} / ${player.maxTorpedoAmmo}`;
+    }
     document.getElementById('creditsDisplay').innerText = `Credits: ${player.credits} cr`;
 }
 
@@ -964,6 +1108,10 @@ function drawEnemy(ctx, e) {
     ctx.save();
     ctx.translate(e.x, e.y);
     ctx.rotate(e.angle);
+
+    if (e.isCloaked) {
+        ctx.globalAlpha = 0.2; // Semi-transparent for player visual tracking, but untargetable
+    }
 
     if (e.type === 'romulan') {
         // Romulan Warbird (Green, broad wings)
