@@ -1603,11 +1603,12 @@ function drawPlayer(ctx) {
         ctx.lineTo(-40, 10);
         ctx.fill();
         ctx.globalAlpha = 1.0;
-    } else {
-        ctx.fillStyle = '#FF3333'; // Idle impulse
+        } else {
+            ctx.fillStyle = '#FF3333'; // Idle impulse
+        }
+        ctx.beginPath();
+        ctx.fillRect(0, -5, 4, 10);
     }
-    ctx.beginPath();
-    ctx.fillRect(0, -5, 4, 10);
 
     ctx.restore();
 }
